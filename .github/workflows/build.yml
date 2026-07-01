@@ -2,115 +2,81 @@ name: build.yml
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3,9,15,21 * * *"
+    - cron: "0 0 * * *"
   push:
     branches:
-      - master
+      - main
     paths-ignore:
       - "**/README.md"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Set variables
         run: |
-          echo "RELEASE_NAME=Released on $(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          echo "TAG_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          
-          echo "ANTIFILTER_DOWNLOAD=https://antifilter.download/list/domains.lst" >> $GITHUB_ENV
-          echo "ANTIFILTER_DOWNLOAD_COMMUNITY=https://community.antifilter.download/list/domains.lst" >> $GITHUB_ENV
-          echo "REFILTER_ALL=https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/domains_all.lst" >> $GITHUB_ENV
-          
-          echo "PETERLOWE_REJECT_URL=https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext" >> $GITHUB_ENV
-          echo "ADGUARD_DNS_REJECT_URL=https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" >> $GITHUB_ENV
-          echo "WIN_SPY=https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt" >> $GITHUB_ENV
-          echo "WIN_UPDATE=https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/update.txt" >> $GITHUB_ENV
-          echo "WIN_EXTRA=https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/extra.txt" >> $GITHUB_ENV
-          
-          
-          echo "GFW=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/refs/heads/release/gfw.txt" >> $GITHUB_ENV
-          echo "GREATFIRE=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/refs/heads/release/greatfire.txt" >> $GITHUB_ENV
-        shell: bash
+          echo "RELEASE_NAME=$(date +%d-%m-%Y)" >> $GITHUB_ENV
+          echo "TAG_NAME=$(date +%d-%m-%Y)" >> $GITHUB_ENV
 
-      - name: Checkout runetfreedom/russia-domains-list
+      - name: Sync forks with upstream
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          sync_fork() {
+            repo="$1"
+            branch="$2"
+            echo "Syncing ${repo} (branch: ${branch})..."
+            if ! gh api "repos/${repo}/merge-upstream" -f "branch=${branch}" --jq '.message'; then
+              echo "::warning::Failed to sync ${repo}. Build will continue with the current fork state."
+            fi
+          }
+
+          sync_fork golukon/domain-list-community master
+          sync_fork golukon/domains-only-russia main
+          sync_fork golukon/russia-mobile-internet-whitelist main
+
+      - name: Checkout golukon/domain-list-community
         uses: actions/checkout@v4
         with:
-          repository: runetfreedom/russia-domains-list
-          path: additional
-
-      - name: Checkout runetfreedom/domain-list-custom
-        uses: actions/checkout@v4
-        with:
-          repository: runetfreedom/domain-list-custom
-          path: custom
-
-      - name: Checkout v2fly/domain-list-community
-        uses: actions/checkout@v4
-        with:
-          repository: v2fly/domain-list-community
+          repository: golukon/domain-list-community
           path: community
+
+      - name: Checkout golukon/domains-only-russia
+        uses: actions/checkout@v4
+        with:
+          repository: golukon/domains-only-russia
+          path: domains-only-russia
+
+      - name: Checkout golukon/russia-mobile-internet-whitelist
+        uses: actions/checkout@v4
+        with:
+          repository: golukon/russia-mobile-internet-whitelist
+          path: russia-mobile-internet-whitelist
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: ./custom/go.mod
-          cache-dependency-path: ./custom/go.sum
+          go-version-file: ./community/go.mod
+          cache-dependency-path: ./community/go.sum
 
-      - name: Get and add domain lists
-        run: |          
-          curl -sSL $ANTIFILTER_DOWNLOAD > ./antifilter-download.txt
-          curl -sSL $ANTIFILTER_DOWNLOAD_COMMUNITY > ./antifilter-download-community.txt
-          curl -sSL $REFILTER_ALL > ./refilter.txt
-          curl -sSL $WIN_SPY | grep "0.0.0.0" | awk '{print $2}' > ./win-spy.txt
-          curl -sSL $WIN_UPDATE | grep "0.0.0.0" | awk '{print $2}' > ./win-update.txt
-          curl -sSL $WIN_EXTRA | grep "0.0.0.0" | awk '{print $2}' > ./win-extra.txt
-          
-          curl -sSL $GFW > ./community/data/gfw.txt
-          curl -sSL $GREATFIRE > ./community/data/greatfire.txt
-          
-          cp {antifilter-download,antifilter-download-community,refilter,win-spy,win-update,win-extra}.txt ./community/data/
-          for f in ./community/data/*.txt; do mv "$f" "${f//.txt/}"; done
-          
-          rm -rf ./additional/README.md
-          mv ./additional/* ./community/data/
-
-      - name: Build ad block
-        run: |
-          curl -sSL $ADGUARD_DNS_REJECT_URL | perl -ne '/^\|\|([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})\^$/ && print "$1\n"' | perl -ne 'print if not /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' > temp-reject.txt
-          curl -sSL $PETERLOWE_REJECT_URL | perl -ne '/^127\.0\.0\.1\s([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})$/ && print "$1\n"' >> temp-reject.txt
-          sed -i '/t.co/d' temp-reject.txt
-          cat temp-reject.txt | sort --ignore-case -u > ./community/data/category-ads-all
-
-      - name: Build Russia general blocked list
-        run: |
-          echo "include:antifilter-download-community" > ./community/data/ru-blocked
-          echo "include:refilter" >> ./community/data/ru-blocked
-          
-          echo "include:antifilter-download" > ./community/data/ru-blocked-all
-          echo "include:antifilter-download-community" >> ./community/data/ru-blocked-all
-          echo "include:refilter" >> ./community/data/ru-blocked-all          
-
-      - name: Build Ru only list
-        run: |
-          mkdir -p ./community/data-ru
-          cp ./community/data/{category-ads-all,private,ru-available-only-inside,category-gov-ru} ./community/data-ru/
-          cat ./community/data/antifilter-download-community ./community/data/refilter | sort --ignore-case -u > ./community/data-ru/ru-blocked
-          
       - name: Build geosite.dat file
         run: |
-          cd custom || exit 1
-          go run ./ --exportlists=  --datname=geosite-ru-only.dat --togfwlist=ru-blocked --datapath=../community/data-ru
-          go run ./ --exportlists=category-ads-all,google,youtube,discord,ru-blocked,ru-blocked-all,private --datapath=../community/data
+          mkdir -p ./data ./publish
+          grep -v '^include:category-gov-ru' ./domains-only-russia/ru-available-only-inside > ./data/ru-inside
+          cat ./community/data/category-gov-ru >> ./data/ru-inside
+          cat ./russia-mobile-internet-whitelist/whitelist.txt >> ./data/ru-inside
+          printf '%s\n' '[{"name":"geosite.dat","mode":"allowlist","lists":["ru-inside"]}]' > ./datprofile.json
 
-      - name: Move and zip files and generate sha256 hash
-        run: |
-          install -Dp ./custom/publish/geosite-ru-only.dat ./publish/geosite-ru-only.dat
-          install -Dp ./custom/publish/geosite.dat ./publish/geosite.dat
-          install -p {antifilter-download,antifilter-download-community,refilter,win-spy,win-update,win-extra}.txt ./publish/
-          install -p ./custom/publish/{ru-blocked,ru-blocked-all,discord,youtube,google,private,category-ads-all}.txt ./publish/
-          
-          (cd ./publish && sha256sum geosite.dat > geosite.dat.sha256sum)
+          cd community
+          go run ./ \
+            --datapath=../data \
+            --datprofile=../datprofile.json \
+            --outputdir=../publish
+
+          cd ../publish
+          sha256sum geosite.dat > geosite.dat.sha256sum
 
       - name: Release and upload assets
         uses: svenstaro/upload-release-action@v2
@@ -120,6 +86,7 @@ jobs:
           tag: ${{ env.TAG_NAME }}
           file_glob: true
           file: ./publish/*
+          overwrite: true
 
       - name: Git push assets to "release" branch
         run: |
